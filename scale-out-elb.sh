@@ -7,12 +7,16 @@
 # LBにアタッチ前に確認したい場合、do_attachをfalseにすれば、EC2起動までで終わってくれます
 ####################################################
 # 準備
-profile="sandbox-user";
-elb_name="sample-elb";
+profile="sandbox-user"
+elb_name="sample-elb"
 create_count="1"; # AZの中で増やしたい数(マルチAZで一台ずつ増やしたい場合は1を設定する)
-app_dir=""
-ssh_command=""
 do_attach="false"
+## unicorn起動用のパラメーター
+humidai="step" # ローカルのコンフィグで設定した踏み台のホスト名
+ec2_user="ec2-user"
+app_dir=""
+environment="production"
+exec_command="bundle exec unicorn -c config/$environment/unicorn.rb"
 
 
 # ELB名称からELBの情報を返す
@@ -64,7 +68,7 @@ delete_dup () {
 }
 
 # AMI作成元のインスタンスを決める
-# インスタンスIDを複数受け取って、AZごとに作成日が一番古いインスタンスIDを返す
+# インスタンスIDを複数受け取って、重複AZのインスタンスは排除してインスタンスIDを返す
 # parameter: <i-xxx i-yyy ...>
 # return: <i-xxx i-yyy ...>
 determine_origin_instance () {
@@ -72,18 +76,15 @@ determine_origin_instance () {
   local az_list=`get_az_list $instance_ids`
   local target_instance_id_array=()
   for az in $az_list; do
-    local instance_id=`aws ec2 describe-instances \
-      --output json \
-      --profile $profile \
-      --filters \
-        "Name=availability-zone,Values=$az" \
-        "Name=instance-state-name,Values=running" \
-      | jq -r '.Reservations[0].Instances[].InstanceId'`
+    # 一旦、Instances[0]で取れた一番最初のインスタンスをに絞るが、日付とかでsortした方がいいかも
+    local instance_id=`aws ec2 describe-instances --instance-ids $instance_ids --output json \
+      | jq -r '.Reservations[].Instances[0] \
+      | select(.Placement.AvailabilityZone == "'$az'") \
+      | .InstanceId'`
     target_instance_id_array+=($instance_id)
   done
   echo ${target_instance_id_array[@]}
 }
-
 
 # インスタンスのIDを受け取ってAMIを作成する
 # parameter: <i-xxx>
@@ -101,13 +102,16 @@ create_image () {
     --name $new_image_name \
     --profile $profile \
     --no-reboot`
+  ## 作成できなかったら終了
+  if [ -z "$new_image" ] ; then
+    echo "failer create image!"
+    exit 1
+  fi
   # イメージがavailableになるまで待つ
   local image_id=`echo $new_image | jq -r '.ImageId'`
   aws ec2 wait image-available --image-ids $image_id --profile $profile
   echo $image_id
 }
-
-
 
 # AMIからインスタンスを起動する。countの数だけ新しいインスタンスIDを返す。
 # parameter: <ami-xxx i-xxx count>
@@ -144,17 +148,16 @@ run_instance () {
   echo $new_instance_ids
 }
 
-
 # # unicornを起動する
-# ## インスタンスにsshする
 # parameter: <i-aaa i-bbb ...>
 # return: <>
 start_unicorn () {
-  # ToDo ちゃんと書く
-  local ip=`echo $new_instance | jq -r '.Instances[].PublicIpAddress'`
+  local ips=`echo $@ | jq -r '.Instances[].PublicIpAddress'`
+  for ip in $ips; do
+    ssh -t $humidai "ssh -t $ec2_user@$ip cd $app_dir $exec_command"
+  done
+  # ToDo 起動したか確認する
 }
-
-
 
 #############################実行部分################################
 
@@ -193,6 +196,10 @@ fi
 for origin_instance_id in $origin_instance_ids; do
   # インスタンスのIDを指定してイメージを作成する
   new_image_id=`create_image $origin_instance_id`
+  if [ $? == 1 ]; then
+    echo "failer create instance!"
+    exit 1
+  fi
   echo "success create image($new_image_id)"
 
   # イメージからインスタンスを起動する
