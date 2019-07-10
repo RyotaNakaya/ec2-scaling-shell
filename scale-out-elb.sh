@@ -78,6 +78,7 @@ determine_origin_instance () {
   for az in $az_list; do
     # 一旦、Instances[0]で取れた一番最初のインスタンスをに絞るが、日付とかでsortした方がいいかも
     local instance_id=`aws ec2 describe-instances --instance-ids $instance_ids --output json \
+      --profile $profile \
       | jq -r '.Reservations[].Instances[0] \
       | select(.Placement.AvailabilityZone == "'$az'") \
       | .InstanceId'`
@@ -92,11 +93,12 @@ determine_origin_instance () {
 create_image () {
   local instance_id=$1
   local date=`date +%Y%m%d%H%M%S`
-  local instance_name=`aws ec2 describe-instances \
-    --query 'Reservations[].Instances[].Tags[].Value' \
-    --filter "Name=instance-id,Values=$instance_id" \
-    --profile $profile --output text`
-  local new_image_name=${instance_name}_$date
+  # ToDo new AMI名称のprefixに作成もとインスタンス名称を使おうと思ったが、<みたいな文字が含まれるとエラーになるので直す
+  # local instance_name=`aws ec2 describe-instances \
+  #   --query 'Reservations[].Instances[].Tags[].Value' \
+  #   --filter "Name=instance-id,Values=$instance_id" \
+  #   --profile $profile --output text`
+  local new_image_name=${instance_id}_$date
   local new_image=`aws ec2 create-image \
     --instance-id $instance_id \
     --name $new_image_name \
@@ -197,7 +199,7 @@ for origin_instance_id in $origin_instance_ids; do
   # インスタンスのIDを指定してイメージを作成する
   new_image_id=`create_image $origin_instance_id`
   if [ $? == 1 ]; then
-    echo "failer create instance!"
+    echo "failer create image!"
     exit 1
   fi
   echo "success create image($new_image_id)"
