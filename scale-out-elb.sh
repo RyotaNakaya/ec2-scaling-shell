@@ -154,7 +154,7 @@ run_instance () {
 # parameter: <i-aaa i-bbb ...>
 # return: <>
 start_unicorn () {
-  local ips=`echo $@ | jq -r '.Instances[].PublicIpAddress'`
+  local ips=`echo $@ | jq -r '.Instances[].PrivateIpAddress'`
   for ip in $ips; do
     ssh -t $humidai "ssh -t $ec2_user@$ip cd $app_dir $exec_command"
   done
